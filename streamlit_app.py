@@ -32,6 +32,14 @@ XPL_DECIMALS = 18
 XPL_PRICE_USD = 1.0
 
 # =========================
+# Session state
+# =========================
+if "balances_df" not in st.session_state:
+    st.session_state.balances_df = pd.DataFrame()
+if "selected_wallet" not in st.session_state:
+    st.session_state.selected_wallet = None
+
+# =========================
 # Helpers
 # =========================
 def get_secret(name: str) -> str:
@@ -62,6 +70,9 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
     r.raise_for_status()
     return r.json() or {}
 
+def df_not_empty(obj) -> bool:
+    return isinstance(obj, pd.DataFrame) and not obj.empty
+
 # =========================
 # Sidebar
 # =========================
@@ -87,7 +98,16 @@ wallets_raw = st.text_area(
 )
 wallets = normalize_wallets(wallets_raw)
 
-if st.button("Fetch Balances", type="primary"):
+colA, colB = st.columns([1, 3])
+with colA:
+    run = st.button("Fetch Balances", type="primary")
+with colB:
+    st.caption("Click a wallet in the summary to drill into its assets.")
+
+# =========================
+# Fetch & build DF
+# =========================
+if run:
     if not SIM_API_KEY:
         st.error("Missing SIM API key.")
         st.stop()
@@ -155,45 +175,118 @@ if st.button("Fetch Balances", type="primary"):
 
     if not rows:
         st.info("No balances found.")
-    else:
-        df = pd.DataFrame(rows)
+        st.stop()
 
-        for col in ("amount", "price_usd", "value_usd"):
-            if col in df.columns:
-                df[col] = pd.to_numeric(df[col], errors="coerce")
+    df = pd.DataFrame(rows)
+    for col in ("amount", "price_usd", "value_usd"):
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
 
-        # Top metrics
-        total = float(df["value_usd"].fillna(0).sum()) if "value_usd" in df.columns else 0.0
-        c1, c2, c3 = st.columns(3)
-        c1.metric("Total USD", f"${total:,.2f}")
-        c2.metric("Wallets", df["wallet"].nunique() if "wallet" in df.columns else 0)
-        c3.metric("Assets", df["symbol"].nunique() if "symbol" in df.columns else 0)
+    # cache for drilldown views
+    st.session_state.balances_df = df
+    st.session_state.selected_wallet = None  # reset selection on new fetch
 
-        st.divider()
+# =========================
+# Overview + Wallets table + Drilldown
+# =========================
+if df_not_empty(st.session_state.balances_df):
+    df_all = st.session_state.balances_df.copy()
 
-        # By chain
-        if {"chain", "value_usd"}.issubset(df.columns):
-            by_chain = (
-                df.groupby("chain", as_index=False)["value_usd"]
+    # ---- Top metrics
+    total = float(df_all["value_usd"].fillna(0).sum()) if "value_usd" in df_all.columns else 0.0
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Total USD", f"${total:,.2f}")
+    c2.metric("Wallets", df_all["wallet"].nunique() if "wallet" in df_all.columns else 0)
+    c3.metric("Assets", df_all["symbol"].nunique() if "symbol" in df_all.columns else 0)
+
+    st.divider()
+
+    # ---- By chain
+    if {"chain", "value_usd"}.issubset(df_all.columns):
+        by_chain = (
+            df_all.groupby("chain", as_index=False)["value_usd"]
                   .sum()
                   .sort_values("value_usd", ascending=False)
-            )
-            st.subheader("By Chain")
-            st.dataframe(by_chain, use_container_width=True, height=220)
-
-        # Pretty display
-        st.subheader("Balances")
-        df_show = df.copy()
-        if "amount" in df_show.columns:
-            df_show["amount"] = df_show["amount"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
-        if "price_usd" in df_show.columns:
-            df_show["price_usd"] = df_show["price_usd"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
-        if "value_usd" in df_show.columns:
-            df_show["value_usd"] = df_show["value_usd"].map(lambda x: f"{x:,.2f}" if pd.notnull(x) else "")
-
-        show_cols = ["wallet", "chain", "symbol", "amount", "price_usd", "value_usd", "token_address"]
-        st.dataframe(
-            df_show.sort_values(by=["value_usd"], ascending=[False], na_position="last")[show_cols],
-            use_container_width=True, height=460
         )
+        st.subheader("By Chain")
+        st.dataframe(by_chain, use_container_width=True, height=220)
 
+    st.divider()
+
+    # ---- Wallets summary (click to drill down)
+    st.subheader("Wallets")
+    if {"wallet", "value_usd"}.issubset(df_all.columns):
+        wallet_table = (
+            df_all.groupby("wallet", as_index=False)["value_usd"]
+                  .sum()
+                  .rename(columns={"value_usd": "total_usd"})
+                  .sort_values("total_usd", ascending=False)
+        )
+    else:
+        wallet_table = pd.DataFrame(columns=["wallet", "total_usd"])
+
+    # Pretty print summary table
+    wt_show = wallet_table.copy()
+    if "total_usd" in wt_show.columns:
+        wt_show["total_usd"] = wt_show["total_usd"].map(lambda x: f"${x:,.2f}")
+    st.dataframe(wt_show, use_container_width=True, height=240)
+
+    # Buttons to drill down per wallet
+    st.caption("Click a wallet to view details:")
+    for i, row in wallet_table.iterrows():
+        cols = st.columns([6, 2, 1])
+        cols[0].write(f"{row['wallet']}")
+        cols[1].write(f"${row['total_usd']:,.2f}")
+        if cols[2].button("View", key=f"view_{i}"):
+            st.session_state.selected_wallet = row["wallet"]
+            st.rerun()
+
+    # ---- Drilldown pane
+    if st.session_state.selected_wallet:
+        sel = st.session_state.selected_wallet
+        st.divider()
+        st.subheader(f"Details for {sel}")
+
+        df_sel = df_all[df_all["wallet"] == sel].copy()
+
+        # Chain breakdown for this wallet
+        if {"chain", "value_usd"}.issubset(df_sel.columns):
+            chain_totals = (
+                df_sel.groupby("chain", as_index=False)["value_usd"]
+                      .sum()
+                      .sort_values("value_usd", ascending=False)
+            )
+        else:
+            chain_totals = pd.DataFrame(columns=["chain", "value_usd"])
+
+        col1, col2 = st.columns([2, 3])
+        with col1:
+            st.markdown("**By Chain (USD)**")
+            st.dataframe(chain_totals, use_container_width=True)
+
+        with col2:
+            st.markdown("**Holdings**")
+            show_cols = ["chain", "symbol", "amount", "price_usd", "value_usd", "token_address"]
+            show_cols = [c for c in show_cols if c in df_sel.columns]
+
+            # nice formatting
+            df_view = df_sel.copy()
+            if "amount" in df_view.columns:
+                df_view["amount"] = df_view["amount"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
+            if "price_usd" in df_view.columns:
+                df_view["price_usd"] = df_view["price_usd"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
+            if "value_usd" in df_view.columns:
+                df_view["value_usd"] = df_view["value_usd"].map(lambda x: f"${x:,.2f}" if pd.notnull(x) else "")
+
+            st.dataframe(
+                df_view.sort_values("value_usd", ascending=False, na_position="last")[show_cols],
+                use_container_width=True, height=420
+            )
+
+        # Back button
+        if st.button("Back to all wallets"):
+            st.session_state.selected_wallet = None
+            st.rerun()
+
+else:
+    st.info("Enter wallets and click Fetch Balances to begin.")
