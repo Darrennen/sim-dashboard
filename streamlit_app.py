@@ -45,11 +45,9 @@ if "selected_wallet" not in st.session_state:
 # =========================
 def get_sim_key():
     try:
-        if "SIM_API_KEY" in st.secrets:
-            return st.secrets["SIM_API_KEY"]
+        return st.secrets["SIM_API_KEY"]   # reads from .streamlit/secrets.toml
     except Exception:
-        pass
-    return os.getenv("SIM_API_KEY", "")
+        return os.getenv("SIM_API_KEY", "")
 
 SIM_API_KEY = get_sim_key()
 
@@ -89,13 +87,12 @@ def df_not_empty(obj) -> bool:
 # =========================
 with st.sidebar:
     st.header("Settings")
-    SIM_API_KEY = st.text_input("SIM API Key", type="password", value=get_secret("SIM_API_KEY"))
     selected_chains = st.multiselect(
         "Chains to include",
         list(CHAIN_OPTIONS.keys()),
         default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base"],
     )
-    st.caption("Tip: put your key in .streamlit/secrets.toml or export SIM_API_KEY in terminal.")
+    st.caption("SIM API key is loaded automatically from `.streamlit/secrets.toml` or environment.")
 
 # =========================
 # Main UI
