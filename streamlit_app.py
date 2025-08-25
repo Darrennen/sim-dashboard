@@ -3,6 +3,7 @@ import re
 import requests
 import pandas as pd
 import streamlit as st
+import os, streamlit as st
 
 # =========================
 # App config
@@ -42,6 +43,16 @@ if "selected_wallet" not in st.session_state:
 # =========================
 # Helpers
 # =========================
+def get_sim_key():
+    try:
+        if "SIM_API_KEY" in st.secrets:
+            return st.secrets["SIM_API_KEY"]
+    except Exception:
+        pass
+    return os.getenv("SIM_API_KEY", "")
+
+SIM_API_KEY = get_sim_key()
+
 def get_secret(name: str) -> str:
     try:
         if name in st.secrets:
