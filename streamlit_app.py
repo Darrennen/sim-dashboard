@@ -1,5 +1,6 @@
 import os
 import re
+import json
 import requests
 import pandas as pd
 import streamlit as st
@@ -38,6 +39,9 @@ if "balances_df" not in st.session_state:
     st.session_state.balances_df = pd.DataFrame()
 if "selected_wallet" not in st.session_state:
     st.session_state.selected_wallet = None
+# NEW: per-wallet notes
+if "wallet_notes" not in st.session_state:
+    st.session_state.wallet_notes = {}  # {wallet: "note text"}
 
 # =========================
 # Helpers
@@ -73,6 +77,11 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
 def df_not_empty(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
 
+def trunc(s: str, n: int = 60) -> str:
+    if not isinstance(s, str):
+        return ""
+    return s if len(s) <= n else (s[: n - 1] + "…")
+
 # =========================
 # Sidebar
 # =========================
@@ -85,6 +94,25 @@ with st.sidebar:
         default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base"],
     )
     st.caption("Tip: put your key in .streamlit/secrets.toml or export SIM_API_KEY in terminal.")
+
+    st.divider()
+    st.subheader("Notes: Import / Export")
+    # Export notes
+    notes_json = json.dumps(st.session_state.wallet_notes, indent=2)
+    st.download_button("Download notes JSON", data=notes_json, file_name="wallet_notes.json", mime="application/json")
+
+    # Import notes (merge)
+    uploaded = st.file_uploader("Upload notes JSON to merge", type=["json"])
+    if uploaded:
+        try:
+            new_notes = json.loads(uploaded.read().decode("utf-8"))
+            if isinstance(new_notes, dict):
+                st.session_state.wallet_notes.update({k: str(v) for k, v in new_notes.items()})
+                st.success("Notes imported & merged.")
+            else:
+                st.error("Invalid notes file (expected a JSON object).")
+        except Exception as e:
+            st.error(f"Failed to import notes: {e}")
 
 # =========================
 # Main UI
@@ -102,7 +130,7 @@ colA, colB = st.columns([1, 3])
 with colA:
     run = st.button("Fetch Balances", type="primary")
 with colB:
-    st.caption("Click a wallet in the summary to drill into its assets.")
+    st.caption("Click a wallet in the summary to drill into its assets. Add notes per wallet below the details.")
 
 # =========================
 # Fetch & build DF
@@ -187,7 +215,7 @@ if run:
     st.session_state.selected_wallet = None  # reset selection on new fetch
 
 # =========================
-# Overview + Wallets table + Drilldown
+# Overview + Wallets table + Drilldown + Notes
 # =========================
 if df_not_empty(st.session_state.balances_df):
     df_all = st.session_state.balances_df.copy()
@@ -213,7 +241,7 @@ if df_not_empty(st.session_state.balances_df):
 
     st.divider()
 
-    # ---- Wallets summary (click to drill down)
+    # ---- Wallets summary (with Notes column) + drilldown buttons
     st.subheader("Wallets")
     if {"wallet", "value_usd"}.issubset(df_all.columns):
         wallet_table = (
@@ -225,14 +253,15 @@ if df_not_empty(st.session_state.balances_df):
     else:
         wallet_table = pd.DataFrame(columns=["wallet", "total_usd"])
 
-    # Pretty print summary table
+    # Add notes column (read-only view here)
+    wallet_table["note"] = wallet_table["wallet"].map(lambda w: trunc(st.session_state.wallet_notes.get(w, ""), 60))
+
     wt_show = wallet_table.copy()
     if "total_usd" in wt_show.columns:
         wt_show["total_usd"] = wt_show["total_usd"].map(lambda x: f"${x:,.2f}")
-    st.dataframe(wt_show, use_container_width=True, height=240)
+    st.dataframe(wt_show, use_container_width=True, height=260)
 
-    # Buttons to drill down per wallet
-    st.caption("Click a wallet to view details:")
+    st.caption("Click a wallet to view details and edit its note:")
     for i, row in wallet_table.iterrows():
         cols = st.columns([6, 2, 1])
         cols[0].write(f"{row['wallet']}")
@@ -241,7 +270,7 @@ if df_not_empty(st.session_state.balances_df):
             st.session_state.selected_wallet = row["wallet"]
             st.rerun()
 
-    # ---- Drilldown pane
+    # ---- Drilldown + Notes editor
     if st.session_state.selected_wallet:
         sel = st.session_state.selected_wallet
         st.divider()
@@ -264,12 +293,19 @@ if df_not_empty(st.session_state.balances_df):
             st.markdown("**By Chain (USD)**")
             st.dataframe(chain_totals, use_container_width=True)
 
+            st.markdown("**Notes**")
+            current_note = st.session_state.wallet_notes.get(sel, "")
+            new_note = st.text_area("Write a note for this wallet", value=current_note, height=160, key=f"note_{sel}")
+            if st.button("Save Note", key=f"save_note_{sel}", type="primary"):
+                st.session_state.wallet_notes[sel] = new_note.strip()
+                st.success("Note saved.")
+                st.rerun()
+
         with col2:
             st.markdown("**Holdings**")
             show_cols = ["chain", "symbol", "amount", "price_usd", "value_usd", "token_address"]
             show_cols = [c for c in show_cols if c in df_sel.columns]
 
-            # nice formatting
             df_view = df_sel.copy()
             if "amount" in df_view.columns:
                 df_view["amount"] = df_view["amount"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
