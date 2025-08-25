@@ -1,9 +1,5 @@
-import os
-import re
-import requests
-import pandas as pd
+import os, re, requests, pandas as pd
 import streamlit as st
-import os, streamlit as st
 
 # =========================
 # App config
@@ -43,21 +39,19 @@ if "selected_wallet" not in st.session_state:
 # =========================
 # Helpers
 # =========================
-def get_sim_key():
+def get_sim_key() -> str:
+    """
+    Priority:
+      1) st.secrets["SIM_API_KEY"] (from .streamlit/secrets.toml locally,
+         or from Streamlit Cloud app Secrets)
+      2) environment variable SIM_API_KEY (e.g. export SIM_API_KEY=...)
+    """
     try:
-        return st.secrets["SIM_API_KEY"]   # reads from .streamlit/secrets.toml
+        return st.secrets["SIM_API_KEY"]
     except Exception:
         return os.getenv("SIM_API_KEY", "")
 
 SIM_API_KEY = get_sim_key()
-
-def get_secret(name: str) -> str:
-    try:
-        if name in st.secrets:
-            return st.secrets[name]
-    except Exception:
-        pass
-    return os.getenv(name, "")
 
 def normalize_wallets(raw: str) -> list[str]:
     lines = [x.strip() for x in (raw or "").splitlines()]
@@ -83,7 +77,7 @@ def df_not_empty(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
 
 # =========================
-# Sidebar
+# Sidebar (NO API INPUT HERE)
 # =========================
 with st.sidebar:
     st.header("Settings")
@@ -92,7 +86,11 @@ with st.sidebar:
         list(CHAIN_OPTIONS.keys()),
         default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base"],
     )
-    st.caption("SIM API key is loaded automatically from `.streamlit/secrets.toml` or environment.")
+    # tiny status so you know if a key was found
+    st.caption(
+        "SIM API key source: " +
+        ("✅ loaded" if bool(SIM_API_KEY) else "❌ not found — add to `.streamlit/secrets.toml` or env")
+    )
 
 # =========================
 # Main UI
@@ -117,7 +115,10 @@ with colB:
 # =========================
 if run:
     if not SIM_API_KEY:
-        st.error("Missing SIM API key.")
+        st.error(
+            "Missing SIM API key. Add it to `.streamlit/secrets.toml` (local) "
+            "or App → Settings → *Secrets* (Streamlit Cloud), or set env var SIM_API_KEY."
+        )
         st.stop()
     if not wallets:
         st.warning("Please enter at least one wallet address.")
