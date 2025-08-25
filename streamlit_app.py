@@ -16,24 +16,13 @@ BASE_SIM = "https://api.sim.dune.com/v1/evm"
 
 # SIM-supported common EVM chains
 CHAIN_OPTIONS = {
-    "Ethereum": 1,
-    "Optimism": 10,
-    "Arbitrum": 42161,
-    "Polygon": 137,
-    "Base": 8453,
-    "Bnb Smart Chain": 56,
-    "Avalanche": 43114,
-    "Fantom": 250,
+    "Ethereum": 1, "Optimism": 10, "Arbitrum": 42161, "Polygon": 137,
+    "Base": 8453, "Bnb Smart Chain": 56, "Avalanche": 43114, "Fantom": 250,
 }
 
 # Plasma & XPL overrides
-PLASMA_SYMBOL_NAME = "PlasmaUSD"
-PLASMA_DECIMALS = 6
-PLASMA_PRICE_USD = 1.0
-
-XPL_SYMBOL_NAME = "XPL"
-XPL_DECIMALS = 18
-XPL_PRICE_USD = 1.0
+PLASMA_SYMBOL_NAME = "PlasmaUSD"; PLASMA_DECIMALS = 6; PLASMA_PRICE_USD = 1.0
+XPL_SYMBOL_NAME = "XPL";          XPL_DECIMALS    = 18; XPL_PRICE_USD    = 1.0
 
 # =========================
 # Session state
@@ -64,7 +53,6 @@ def _conn():
     return c
 
 def save_snapshot_df(df: pd.DataFrame) -> str | None:
-    """Save full portfolio snapshot (all wallets) to SQLite."""
     if df is None or df.empty:
         return None
     ts = dt.datetime.now().isoformat(timespec="seconds")
@@ -81,7 +69,6 @@ def save_snapshot_df(df: pd.DataFrame) -> str | None:
     return ts
 
 def load_latest_snapshot() -> pd.DataFrame:
-    """Load the most recent snapshot for each wallet and merge them into one DataFrame."""
     with closing(_conn()) as c:
         rows = c.execute("""
             SELECT s1.ts, s1.wallet, s1.data_json
@@ -110,45 +97,6 @@ def load_note(wallet: str) -> str:
     with closing(_conn()) as c:
         row = c.execute("SELECT note FROM notes WHERE wallet=?", (wallet,)).fetchone()
         return row[0] if row else ""
-
-# =========================
-# Optional: Google Drive backup from the app (manual)
-# Provide in st.secrets:
-#   gdrive_service_account = { ...service account JSON... }
-#   GDRIVE_FOLDER_ID = "folder_id"
-# =========================
-def try_backup_to_gdrive(df: pd.DataFrame):
-    try:
-        if df is None or df.empty:
-            return
-        if "gdrive_service_account" not in st.secrets:
-            return
-        from pydrive2.auth import ServiceAccountCredentials
-        from pydrive2.drive import GoogleDrive
-
-        creds_dict = st.secrets["gdrive_service_account"]
-        folder_id = st.secrets.get("GDRIVE_FOLDER_ID", None)
-        scopes = ["https://www.googleapis.com/auth/drive.file"]
-        creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scopes)
-        drive = GoogleDrive(creds)
-
-        os.makedirs("backups", exist_ok=True)
-        ts = dt.datetime.now().strftime("%Y-%m-%d_%H%M%S")
-        latest_csv = os.path.join("backups", "latest_snapshot.csv")
-        dated_csv = os.path.join("backups", f"snapshot_{ts}.csv")
-        df.to_csv(latest_csv, index=False)
-        df.to_csv(dated_csv, index=False)
-
-        for path, title in [(latest_csv, "latest_snapshot.csv"), (dated_csv, os.path.basename(dated_csv))]:
-            meta = {"title": title}
-            if folder_id:
-                meta["parents"] = [{"id": folder_id}]
-            f = drive.CreateFile(meta)
-            f.SetContentFile(path)
-            f.Upload()
-        st.toast("Backed up to Google Drive")
-    except Exception as e:
-        st.info(f"Drive backup skipped/failed: {e}")
 
 # =========================
 # Helpers
@@ -185,7 +133,7 @@ def df_not_empty(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
 
 # =========================
-# Sidebar (no API input—auto via secrets/env)
+# Sidebar
 # =========================
 with st.sidebar:
     st.header("Settings")
@@ -223,7 +171,7 @@ with colA:
 with colB:
     st.caption("Click a wallet in the summary to drill into its assets. Notes are saved to SQLite.")
 
-# ---- Save wallets/chains for nightly backup (GitHub Actions or cron will read these)
+# ---- Save wallets/chains for nightly backup (GitHub Actions/cron will read these)
 colX, colY = st.columns([1, 3])
 with colX:
     if st.button("Use these wallets for nightly backup"):
@@ -272,7 +220,6 @@ if run:
             token_addr = b.get("address")
             sim_dec = b.get("decimals")
 
-            # Default human amount = raw / 10**decimals (if provided)
             human_amount = to_float(raw_amount, 0.0)
             if sim_dec is not None:
                 try:
@@ -280,18 +227,14 @@ if run:
                 except Exception:
                     pass
 
-            # --- Plasma override ---
             if sym == PLASMA_SYMBOL_NAME.upper():
                 human_amount = to_float(raw_amount, 0.0) / (10 ** PLASMA_DECIMALS)
                 price_usd = PLASMA_PRICE_USD
                 value_usd = human_amount * price_usd
-
-            # --- XPL override ---
             elif sym == XPL_SYMBOL_NAME.upper():
                 human_amount = to_float(raw_amount, 0.0) / (10 ** XPL_DECIMALS)
                 price_usd = XPL_PRICE_USD
                 value_usd = human_amount * price_usd
-
             else:
                 price_usd = to_float(price_sim, None)
                 if value_sim is None and price_usd is not None:
@@ -318,19 +261,16 @@ if run:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # cache & persist
     st.session_state.balances_df = df
     st.session_state.selected_wallet = None
     ts_saved = save_snapshot_df(df)
     if ts_saved:
         st.toast(f"Snapshot saved at {ts_saved}")
-    try_backup_to_gdrive(df)  # optional; needs Drive secrets
 
 # =========================
 # Overview + Wallets table + Drilldown
 # =========================
-def fmt_money(x):
-    return f"${x:,.2f}" if pd.notnull(x) else ""
+def fmt_money(x): return f"${x:,.2f}" if pd.notnull(x) else ""
 
 if df_not_empty(st.session_state.balances_df):
     df_all = st.session_state.balances_df.copy()
