@@ -1,0 +1,44 @@
+name: Nightly Snapshot to Drive
+
+on:
+  schedule:
+    - cron: "59 15 * * *"   # 23:59 MYT (UTC+8)
+  workflow_dispatch: {}
+
+jobs:
+  snapshot:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Prepare wallets/chains if not present
+        run: |
+          mkdir -p data
+          if [ ! -f data/wallets.txt ] && [ -n "${{ secrets.WALLETS }}" ]; then
+            echo "${{ secrets.WALLETS }}" | tr ',' '\n' > data/wallets.txt
+          fi
+          if [ ! -f data/chains.json ] && [ -n "${{ secrets.CHAINS_JSON }}" ]; then
+            echo '${{ secrets.CHAINS_JSON }}' > data/chains.json
+          fi
+          ls -la data || true
+
+      - name: Run snapshot
+        env:
+          SIM_API_KEY: ${{ secrets.SIM_API_KEY }}
+          GDRIVE_CREDS_JSON: ${{ secrets.GDRIVE_CREDS_JSON }}
+          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
+          WALLETS: ${{ secrets.WALLETS }}
+          CHAINS_JSON: ${{ secrets.CHAINS_JSON }}
+        run: |
+          python snapshot.py
