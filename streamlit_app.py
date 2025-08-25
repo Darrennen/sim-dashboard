@@ -39,7 +39,7 @@ if "balances_df" not in st.session_state:
     st.session_state.balances_df = pd.DataFrame()
 if "selected_wallet" not in st.session_state:
     st.session_state.selected_wallet = None
-# NEW: per-wallet notes
+# Per-wallet notes store (persist within session)
 if "wallet_notes" not in st.session_state:
     st.session_state.wallet_notes = {}  # {wallet: "note text"}
 
@@ -76,11 +76,6 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
 
 def df_not_empty(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
-
-def trunc(s: str, n: int = 60) -> str:
-    if not isinstance(s, str):
-        return ""
-    return s if len(s) <= n else (s[: n - 1] + "…")
 
 # =========================
 # Sidebar
@@ -130,7 +125,7 @@ colA, colB = st.columns([1, 3])
 with colA:
     run = st.button("Fetch Balances", type="primary")
 with colB:
-    st.caption("Click a wallet in the summary to drill into its assets. Add notes per wallet below the details.")
+    st.caption("Edit notes inline in the Wallets table. Click a wallet to drill into its assets.")
 
 # =========================
 # Fetch & build DF
@@ -215,15 +210,18 @@ if run:
     st.session_state.selected_wallet = None  # reset selection on new fetch
 
 # =========================
-# Overview + Wallets table + Drilldown + Notes
+# Overview + Wallets table (inline note editing) + Drilldown
 # =========================
+def fmt_money(x, prec=2, prefix="$"):
+    return f"{prefix}{x:,.{prec}f}"
+
 if df_not_empty(st.session_state.balances_df):
     df_all = st.session_state.balances_df.copy()
 
     # ---- Top metrics
     total = float(df_all["value_usd"].fillna(0).sum()) if "value_usd" in df_all.columns else 0.0
     c1, c2, c3 = st.columns(3)
-    c1.metric("Total USD", f"${total:,.2f}")
+    c1.metric("Total USD", fmt_money(total))
     c2.metric("Wallets", df_all["wallet"].nunique() if "wallet" in df_all.columns else 0)
     c3.metric("Assets", df_all["symbol"].nunique() if "symbol" in df_all.columns else 0)
 
@@ -241,8 +239,9 @@ if df_not_empty(st.session_state.balances_df):
 
     st.divider()
 
-    # ---- Wallets summary (with Notes column) + drilldown buttons
+    # ---- Wallets summary (inline editable notes)
     st.subheader("Wallets")
+
     if {"wallet", "value_usd"}.issubset(df_all.columns):
         wallet_table = (
             df_all.groupby("wallet", as_index=False)["value_usd"]
@@ -253,24 +252,41 @@ if df_not_empty(st.session_state.balances_df):
     else:
         wallet_table = pd.DataFrame(columns=["wallet", "total_usd"])
 
-    # Add notes column (read-only view here)
-    wallet_table["note"] = wallet_table["wallet"].map(lambda w: trunc(st.session_state.wallet_notes.get(w, ""), 60))
+    # Add note column (populate from session notes)
+    wallet_table["note"] = wallet_table["wallet"].map(lambda w: st.session_state.wallet_notes.get(w, ""))
 
-    wt_show = wallet_table.copy()
-    if "total_usd" in wt_show.columns:
-        wt_show["total_usd"] = wt_show["total_usd"].map(lambda x: f"${x:,.2f}")
-    st.dataframe(wt_show, use_container_width=True, height=260)
+    # Show an editable table for the 'note' column (wallet & total_usd are locked)
+    edited = st.data_editor(
+        wallet_table,
+        num_rows="fixed",
+        use_container_width=True,
+        height=300,
+        column_config={
+            "wallet": st.column_config.TextColumn("Wallet", disabled=True),
+            "total_usd": st.column_config.NumberColumn("Total USD", disabled=True, format="$%.2f"),
+            "note": st.column_config.TextColumn("Note", help="Edit notes here; auto-saves on change."),
+        },
+        key="wallets_editor",
+    )
 
-    st.caption("Click a wallet to view details and edit its note:")
-    for i, row in wallet_table.iterrows():
+    # Auto-save edited notes back to session_state
+    try:
+        for _, row in edited.iterrows():
+            st.session_state.wallet_notes[row["wallet"]] = str(row.get("note") or "").strip()
+    except Exception:
+        pass
+
+    # View buttons to drill down each wallet
+    st.caption("Click a wallet to view details:")
+    for i, row in edited.iterrows():
         cols = st.columns([6, 2, 1])
         cols[0].write(f"{row['wallet']}")
-        cols[1].write(f"${row['total_usd']:,.2f}")
+        cols[1].write(fmt_money(float(row["total_usd"]) if pd.notnull(row["total_usd"]) else 0.0))
         if cols[2].button("View", key=f"view_{i}"):
             st.session_state.selected_wallet = row["wallet"]
             st.rerun()
 
-    # ---- Drilldown + Notes editor
+    # ---- Drilldown pane
     if st.session_state.selected_wallet:
         sel = st.session_state.selected_wallet
         st.divider()
@@ -293,13 +309,15 @@ if df_not_empty(st.session_state.balances_df):
             st.markdown("**By Chain (USD)**")
             st.dataframe(chain_totals, use_container_width=True)
 
-            st.markdown("**Notes**")
-            current_note = st.session_state.wallet_notes.get(sel, "")
-            new_note = st.text_area("Write a note for this wallet", value=current_note, height=160, key=f"note_{sel}")
-            if st.button("Save Note", key=f"save_note_{sel}", type="primary"):
-                st.session_state.wallet_notes[sel] = new_note.strip()
-                st.success("Note saved.")
-                st.rerun()
+            # Also show the current note (read-only here; edit inline above)
+            st.markdown("**Note (read-only here)**")
+            st.text_area(
+                "Note",
+                value=st.session_state.wallet_notes.get(sel, ""),
+                height=160,
+                key=f"readonly_note_{sel}",
+                disabled=True
+            )
 
         with col2:
             st.markdown("**Holdings**")
