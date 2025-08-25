@@ -4,6 +4,7 @@ import json
 import requests
 import pandas as pd
 import streamlit as st
+from pathlib import Path
 
 # =========================
 # App config
@@ -33,15 +34,40 @@ XPL_DECIMALS = 18
 XPL_PRICE_USD = 1.0
 
 # =========================
+# Persistence (notes saved to disk)
+# =========================
+NOTES_PATH = Path("wallet_notes.json")
+
+def load_notes_from_file() -> dict:
+    if NOTES_PATH.exists():
+        try:
+            data = json.loads(NOTES_PATH.read_text("utf-8"))
+            if isinstance(data, dict):
+                # normalize keys to lowercase once
+                return {str(k).lower(): str(v) for k, v in data.items()}
+        except Exception:
+            pass
+    return {}
+
+def save_notes_to_file(notes: dict) -> None:
+    try:
+        # write pretty & atomically
+        tmp = NOTES_PATH.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(notes, indent=2, ensure_ascii=False), "utf-8")
+        tmp.replace(NOTES_PATH)
+    except Exception as e:
+        st.warning(f"Could not save notes to file: {e}")
+
+# =========================
 # Session state
 # =========================
 if "balances_df" not in st.session_state:
     st.session_state.balances_df = pd.DataFrame()
 if "selected_wallet" not in st.session_state:
     st.session_state.selected_wallet = None
-# Per-wallet notes store (persist within session)
+# Per-wallet notes store (persist within session), populated from file on first run
 if "wallet_notes" not in st.session_state:
-    st.session_state.wallet_notes = {}  # {wallet: "note text"}
+    st.session_state.wallet_notes = load_notes_from_file()
 
 # =========================
 # Helpers
@@ -55,9 +81,15 @@ def get_secret(name: str) -> str:
     return os.getenv(name, "")
 
 def normalize_wallets(raw: str) -> list[str]:
+    # Return unique, lowercased addresses so keys always match notes
     lines = [x.strip() for x in (raw or "").splitlines()]
     addrs = [x for x in lines if x]
-    validish = [a for a in addrs if re.match(r"^0x[a-fA-F0-9]{40}$", a)]
+    validish = [
+        a for a in addrs
+        if re.match(r"^0x[a-fA-F0-9]{40}$", a)
+    ]
+    # normalize to lowercase to avoid checksum/case mismatches
+    validish = [a.lower() for a in validish]
     return list(dict.fromkeys(validish))
 
 def to_float(x, default=None):
@@ -66,7 +98,11 @@ def to_float(x, default=None):
     except Exception:
         return default
 
+@st.cache_data(ttl=180)
 def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
+    """
+    Cached per address to survive reruns/refresh for a short time.
+    """
     url = f"{BASE_SIM}/balances/{addr}"
     if chain_ids:
         url += f"?chain_ids={chain_ids}"
@@ -92,8 +128,8 @@ with st.sidebar:
 
     st.divider()
     st.subheader("Notes: Import / Export")
-    # Export notes
-    notes_json = json.dumps(st.session_state.wallet_notes, indent=2)
+    # Export notes (from session)
+    notes_json = json.dumps(st.session_state.wallet_notes, indent=2, ensure_ascii=False)
     st.download_button("Download notes JSON", data=notes_json, file_name="wallet_notes.json", mime="application/json")
 
     # Import notes (merge)
@@ -102,8 +138,12 @@ with st.sidebar:
         try:
             new_notes = json.loads(uploaded.read().decode("utf-8"))
             if isinstance(new_notes, dict):
-                st.session_state.wallet_notes.update({k: str(v) for k, v in new_notes.items()})
-                st.success("Notes imported & merged.")
+                # normalize keys to lowercase before merging
+                merged = st.session_state.wallet_notes.copy()
+                merged.update({str(k).lower(): str(v) for k, v in new_notes.items()})
+                st.session_state.wallet_notes = merged
+                save_notes_to_file(merged)
+                st.success("Notes imported, merged, and saved.")
             else:
                 st.error("Invalid notes file (expected a JSON object).")
         except Exception as e:
@@ -125,7 +165,7 @@ colA, colB = st.columns([1, 3])
 with colA:
     run = st.button("Fetch Balances", type="primary")
 with colB:
-    st.caption("Edit notes inline in the Wallets table. Click a wallet to drill into its assets.")
+    st.caption("Notes are auto-saved to wallet_notes.json and survive refresh/restarts.")
 
 # =========================
 # Fetch & build DF
@@ -156,7 +196,7 @@ if run:
             raw_amount = b.get("amount")
             price_sim = b.get("price_usd")
             value_sim = b.get("value_usd")
-            token_addr = b.get("address")
+            token_addr = (b.get("address") or "")
             sim_dec = b.get("decimals")
 
             # Default human amount = raw / 10**decimals (if provided)
@@ -187,7 +227,7 @@ if run:
                     value_usd = to_float(value_sim, None)
 
             rows.append({
-                "wallet": addr,
+                "wallet": addr.lower(),  # normalized
                 "chain": (b.get("chain") or "").lower(),
                 "symbol": sym,
                 "amount": human_amount,
@@ -205,7 +245,7 @@ if run:
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    # cache for drilldown views
+    # cache for drilldown views (does not clear notes)
     st.session_state.balances_df = df
     st.session_state.selected_wallet = None  # reset selection on new fetch
 
@@ -213,7 +253,10 @@ if run:
 # Overview + Wallets table (inline note editing) + Drilldown
 # =========================
 def fmt_money(x, prec=2, prefix="$"):
-    return f"{prefix}{x:,.{prec}f}"
+    try:
+        return f"{prefix}{float(x):,.{prec}f}"
+    except Exception:
+        return f"{prefix}0.00"
 
 if df_not_empty(st.session_state.balances_df):
     df_all = st.session_state.balances_df.copy()
@@ -252,38 +295,44 @@ if df_not_empty(st.session_state.balances_df):
     else:
         wallet_table = pd.DataFrame(columns=["wallet", "total_usd"])
 
-    # Add note column (populate from session notes)
+    # Add/editable note column from session_state
     wallet_table["note"] = wallet_table["wallet"].map(lambda w: st.session_state.wallet_notes.get(w, ""))
 
-    # Show an editable table for the 'note' column (wallet & total_usd are locked)
     edited = st.data_editor(
         wallet_table,
         num_rows="fixed",
         use_container_width=True,
-        height=300,
+        height=320,
         column_config={
             "wallet": st.column_config.TextColumn("Wallet", disabled=True),
             "total_usd": st.column_config.NumberColumn("Total USD", disabled=True, format="$%.2f"),
-            "note": st.column_config.TextColumn("Note", help="Edit notes here; auto-saves on change."),
+            "note": st.column_config.TextColumn("Note", help="Edit here; auto-saves to wallet_notes.json"),
         },
         key="wallets_editor",
     )
 
-    # Auto-save edited notes back to session_state
+    # Auto-save edited notes to session and disk
+    changed = False
     try:
         for _, row in edited.iterrows():
-            st.session_state.wallet_notes[row["wallet"]] = str(row.get("note") or "").strip()
+            w = str(row["wallet"]).lower()
+            new_val = str(row.get("note") or "").strip()
+            if st.session_state.wallet_notes.get(w, "") != new_val:
+                st.session_state.wallet_notes[w] = new_val
+                changed = True
     except Exception:
         pass
+    if changed:
+        save_notes_to_file(st.session_state.wallet_notes)
 
     # View buttons to drill down each wallet
     st.caption("Click a wallet to view details:")
     for i, row in edited.iterrows():
         cols = st.columns([6, 2, 1])
         cols[0].write(f"{row['wallet']}")
-        cols[1].write(fmt_money(float(row["total_usd"]) if pd.notnull(row["total_usd"]) else 0.0))
+        cols[1].write(fmt_money(row["total_usd"]))
         if cols[2].button("View", key=f"view_{i}"):
-            st.session_state.selected_wallet = row["wallet"]
+            st.session_state.selected_wallet = str(row["wallet"]).lower()
             st.rerun()
 
     # ---- Drilldown pane
@@ -292,7 +341,7 @@ if df_not_empty(st.session_state.balances_df):
         st.divider()
         st.subheader(f"Details for {sel}")
 
-        df_sel = df_all[df_all["wallet"] == sel].copy()
+        df_sel = df_all[df_all["wallet"].str.lower() == sel].copy()
 
         # Chain breakdown for this wallet
         if {"chain", "value_usd"}.issubset(df_sel.columns):
@@ -309,10 +358,9 @@ if df_not_empty(st.session_state.balances_df):
             st.markdown("**By Chain (USD)**")
             st.dataframe(chain_totals, use_container_width=True)
 
-            # Also show the current note (read-only here; edit inline above)
-            st.markdown("**Note (read-only here)**")
+            st.markdown("**Note**")
             st.text_area(
-                "Note",
+                "Note (edit in the table above)",
                 value=st.session_state.wallet_notes.get(sel, ""),
                 height=160,
                 key=f"readonly_note_{sel}",
