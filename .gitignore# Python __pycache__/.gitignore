@@ -1,0 +1,9 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local DB
+data/app.sqlite
+
+# Optional: OS junk
+.DS_Store
