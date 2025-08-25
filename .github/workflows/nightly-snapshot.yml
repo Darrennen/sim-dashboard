@@ -1,55 +1,25 @@
-name: Nightly Snapshot to GitHub
-
-on:
-  schedule:
-    - cron: "59 15 * * *"   # 23:59 MYT (UTC+8)
-  workflow_dispatch: {}
-
-permissions:
-  contents: write
-
-jobs:
-  snapshot:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repo
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Setup Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install deps
+      - name: Show workspace tree (debug)
         run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
+          echo "Working dir: $(pwd)"
+          ls -la
+          echo "---- .github ----"
+          ls -la .github || true
+          echo "---- .github/workflows ----"
+          ls -la .github/workflows || true
+          echo "---- repo files (git) ----"
+          git ls-files
 
-      - name: Ensure folders
-        run: mkdir -p data backups
-
-      - name: Prepare wallets/chains if not present
-        run: |
-          if [ ! -f data/wallets.txt ] && [ -n "${{ secrets.WALLETS }}" ]; then
-            echo "${{ secrets.WALLETS }}" | tr ',' '\n' > data/wallets.txt
-          fi
-          if [ ! -f data/chains.json ] && [ -n "${{ secrets.CHAINS_JSON }}" ]; then
-            echo '${{ secrets.CHAINS_JSON }}' > data/chains.json
-          fi
-
-      - name: Run snapshot
+      - name: Run snapshot (auto-detect path)
         env:
           SIM_API_KEY: ${{ secrets.SIM_API_KEY }}
           WALLETS: ${{ secrets.WALLETS }}
           CHAINS_JSON: ${{ secrets.CHAINS_JSON }}
-        run: python snapshot.py
-
-      - name: Commit and push snapshot
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add backups/
-          git commit -m "Nightly snapshot $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
-          git push
+          set -euo pipefail
+          FILE=$(git ls-files | grep -E '(^|/)snapshot\.py$' | head -n1 || true)
+          if [ -z "$FILE" ]; then
+            echo "❌ snapshot.py not found in repo"
+            exit 1
+          fi
+          echo "✅ Running: $FILE"
+          python "$FILE"
