@@ -1,3 +1,6 @@
 streamlit
 pandas
 requests
+cryptography
+pydrive2
+google-auth
