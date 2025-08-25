@@ -1,9 +1,12 @@
-name: Nightly Snapshot to Drive
+name: Nightly Snapshot to GitHub
 
 on:
   schedule:
     - cron: "59 15 * * *"   # 23:59 MYT (UTC+8)
   workflow_dispatch: {}
+
+permissions:
+  contents: write
 
 jobs:
   snapshot:
@@ -11,6 +14,8 @@ jobs:
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -22,23 +27,29 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
+      - name: Ensure folders
+        run: mkdir -p data backups
+
       - name: Prepare wallets/chains if not present
         run: |
-          mkdir -p data
           if [ ! -f data/wallets.txt ] && [ -n "${{ secrets.WALLETS }}" ]; then
             echo "${{ secrets.WALLETS }}" | tr ',' '\n' > data/wallets.txt
           fi
           if [ ! -f data/chains.json ] && [ -n "${{ secrets.CHAINS_JSON }}" ]; then
             echo '${{ secrets.CHAINS_JSON }}' > data/chains.json
           fi
-          ls -la data || true
 
       - name: Run snapshot
         env:
           SIM_API_KEY: ${{ secrets.SIM_API_KEY }}
-          GDRIVE_CREDS_JSON: ${{ secrets.GDRIVE_CREDS_JSON }}
-          GDRIVE_FOLDER_ID: ${{ secrets.GDRIVE_FOLDER_ID }}
           WALLETS: ${{ secrets.WALLETS }}
           CHAINS_JSON: ${{ secrets.CHAINS_JSON }}
+        run: python snapshot.py
+
+      - name: Commit and push snapshot
         run: |
-          python snapshot.py
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add backups/
+          git commit -m "Nightly snapshot $(date -u +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
+          git push
