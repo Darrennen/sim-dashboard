@@ -122,10 +122,13 @@ st.markdown("""
 
 BASE_SIM = "https://api.sim.dune.com/v1/evm"
 
-# SIM-supported common EVM chains
+# SIM-supported common EVM chains (expanded to match DeBank coverage)
 CHAIN_OPTIONS = {
     "Ethereum": 1, "Optimism": 10, "Arbitrum": 42161, "Polygon": 137,
-    "Base": 8453, "Bnb Smart Chain": 56, "Avalanche": 43114, "Fantom": 250,
+    "Base": 8453, "BNB Smart Chain": 56, "Avalanche": 43114, "Fantom": 250,
+    "Gnosis Chain": 100, "Moonbeam": 1284, "Blast": 81457, "Scroll": 534352,
+    "Linea": 59144, "zkSync Era": 324, "Mantle": 5000, "Celo": 42220,
+    "Aurora": 1313161554, "Metis": 1088, "Cronos": 25, "Moonriver": 1285
 }
 
 # Plasma & XPL overrides
@@ -240,9 +243,69 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
     url = f"{BASE_SIM}/balances/{addr}"
     if chain_ids:
         url += f"?chain_ids={chain_ids}"
-    r = requests.get(url, headers={"X-Sim-Api-Key": api_key}, timeout=25)
+    r = requests.get(url, headers={"X-Sim-Api-Key": api_key}, timeout=30)
     r.raise_for_status()
     return r.json() or {}
+
+def fetch_defi_positions(addr: str, api_key: str, chain_ids: str) -> dict:
+    """Fetch DeFi positions including lending, staking, LP tokens"""
+    try:
+        url = f"{BASE_SIM}/positions/{addr}"
+        if chain_ids:
+            url += f"?chain_ids={chain_ids}"
+        r = requests.get(url, headers={"X-Sim-Api-Key": api_key}, timeout=30)
+        r.raise_for_status()
+        return r.json() or {}
+    except Exception as e:
+        st.warning(f"DeFi positions fetch failed for {addr[:8]}...: {e}")
+        return {}
+
+def parse_defi_positions(positions_data: dict, addr: str) -> list[dict]:
+    """Parse DeFi positions data into standardized format"""
+    rows = []
+    
+    # Handle different response structures
+    positions = positions_data.get("positions", [])
+    if not positions and "data" in positions_data:
+        positions = positions_data["data"]
+    
+    for position in positions:
+        try:
+            # Extract common fields
+            protocol = position.get("protocol_name", "Unknown")
+            position_type = position.get("type", "defi")
+            chain = position.get("chain", "ethereum").lower()
+            
+            # Handle different position structures
+            tokens = position.get("tokens", [])
+            if not tokens and "detail" in position:
+                tokens = position["detail"].get("supply_token_list", []) + position["detail"].get("borrow_token_list", [])
+            
+            for token in tokens:
+                symbol = (token.get("symbol") or "").upper()
+                amount = float(token.get("amount", 0))
+                price_usd = float(token.get("price", 0)) if token.get("price") else None
+                value_usd = float(token.get("value", 0)) if token.get("value") else None
+                
+                if value_usd is None and price_usd is not None:
+                    value_usd = amount * price_usd
+                
+                if amount > 0 or (value_usd and value_usd > 0):
+                    rows.append({
+                        "wallet": addr,
+                        "chain": chain,
+                        "symbol": f"{symbol}({protocol})" if protocol != "Unknown" else symbol,
+                        "amount": amount,
+                        "price_usd": price_usd,
+                        "value_usd": value_usd,
+                        "token_address": token.get("address", ""),
+                        "protocol": protocol,
+                        "position_type": position_type
+                    })
+        except Exception as e:
+            continue
+    
+    return rows
 
 def df_not_empty(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
@@ -282,7 +345,7 @@ with col2:
     selected_chains = st.multiselect(
         "Select Chains",
         list(CHAIN_OPTIONS.keys()),
-        default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base"],
+        default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base", "BNB Smart Chain", "Gnosis Chain", "Moonbeam", "Blast"],
     )
 
 with col3:
@@ -329,11 +392,17 @@ if fetch_btn:
         progress_bar.progress((i + 1) / total_wallets)
         
         try:
+            # Fetch regular token balances
             data = fetch_balances(addr, SIM_API_KEY, chain_ids)
+            
+            # Also try to fetch DeFi positions
+            defi_data = fetch_defi_positions(addr, SIM_API_KEY, chain_ids)
+            
         except Exception as e:
             st.warning(f"{addr}: {e}")
             continue
 
+        # Process regular balances
         balances = (data.get("balances") or data.get("tokens") or [])
         for b in balances:
             sym_raw = (b.get("symbol") or "").strip()
@@ -375,7 +444,13 @@ if fetch_btn:
                 "price_usd": price_usd,
                 "value_usd": value_usd,
                 "token_address": token_addr,
+                "protocol": "wallet",
+                "position_type": "balance"
             })
+        
+        # Process DeFi positions
+        defi_rows = parse_defi_positions(defi_data, addr)
+        rows.extend(defi_rows)
     
     progress_bar.empty()
     status_text.empty()
@@ -388,12 +463,22 @@ if fetch_btn:
     for col in ("amount", "price_usd", "value_usd"):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
+    
+    # Remove rows with zero or null values
+    df = df[(df["value_usd"].fillna(0) > 0) | (df["amount"].fillna(0) > 0)]
 
     st.session_state.balances_df = df
     st.session_state.selected_wallet = None
     ts_saved = save_snapshot_df(df)
     if ts_saved:
         st.success(f"Portfolio updated at {ts_saved}")
+        
+        # Show summary of fetched data
+        total_found = df["value_usd"].fillna(0).sum()
+        defi_positions = len(df[df.get("protocol", "") != "wallet"])
+        regular_tokens = len(df[df.get("protocol", "") == "wallet"])
+        
+        st.info(f"Found: ${total_found:,.2f} total value | {regular_tokens} wallet tokens | {defi_positions} DeFi positions")
 
 # =========================
 # Dashboard Display
@@ -540,19 +625,25 @@ if df_not_empty(st.session_state.balances_df):
         st.markdown(f'<h2 class="section-title">Token Holdings - {sel[:8]}...{sel[-6:]}</h2>', unsafe_allow_html=True)
         
         if not df_sel.empty:
-            # Token list
-            df_tokens = df_sel.groupby(['symbol', 'chain']).agg({
+            # Token list with protocol information
+            df_tokens = df_sel.groupby(['symbol', 'chain', 'protocol']).agg({
                 'amount': 'sum',
                 'value_usd': 'sum',
-                'price_usd': 'first'
+                'price_usd': 'first',
+                'position_type': 'first'
             }).reset_index().sort_values('value_usd', ascending=False)
             
             for _, token in df_tokens.iterrows():
                 col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
                 
                 with col1:
-                    st.markdown(f"**{token['symbol']}**")
-                    st.caption(f"on {token['chain'].title()}")
+                    # Show protocol badge for DeFi positions
+                    if token.get('protocol', 'wallet') != 'wallet':
+                        st.markdown(f"**{token['symbol']}** `{token['protocol']}`")
+                        st.caption(f"on {token['chain'].title()} • {token.get('position_type', 'defi')}")
+                    else:
+                        st.markdown(f"**{token['symbol']}**")
+                        st.caption(f"on {token['chain'].title()}")
                 
                 with col2:
                     st.markdown(f"{token['amount']:,.6f}")
@@ -595,6 +686,31 @@ if df_not_empty(st.session_state.balances_df):
                 st.markdown(f"{fmt_money(chain_value)}")
             with col3:
                 st.markdown(f"{percentage:.1f}%")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
+    # Debug section for troubleshooting
+    if st.checkbox("🔍 Show Debug Info (compare with DeBank)", value=False):
+        st.markdown('<div class="wallet-section">', unsafe_allow_html=True)
+        st.markdown('<h2 class="section-title">Debug Information</h2>', unsafe_allow_html=True)
+        
+        # Show protocol breakdown
+        if "protocol" in df_all.columns:
+            protocol_breakdown = df_all.groupby("protocol")["value_usd"].sum().sort_values(ascending=False)
+            st.markdown("**By Protocol:**")
+            for protocol, value in protocol_breakdown.items():
+                st.markdown(f"- {protocol}: {fmt_money(value)}")
+        
+        # Show all unique symbols found
+        st.markdown("**All Tokens Found:**")
+        if "symbol" in df_all.columns:
+            symbols_with_values = df_all.groupby("symbol")["value_usd"].sum().sort_values(ascending=False)
+            for symbol, value in symbols_with_values.head(20).items():
+                st.markdown(f"- {symbol}: {fmt_money(value)}")
+        
+        # Raw data table
+        if st.checkbox("Show Raw Data Table"):
+            st.dataframe(df_all.sort_values("value_usd", ascending=False).head(50))
         
         st.markdown('</div>', unsafe_allow_html=True)
 
