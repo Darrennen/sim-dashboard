@@ -113,6 +113,19 @@ def build_df(wallets: List[str], chains: List[str], api_key: str) -> pd.DataFram
 # Main
 # =========================
 def main():
+
+        print("=== DEBUG INFO ===")
+    print(f"SIM_API_KEY present: {'Yes' if os.getenv('SIM_API_KEY') else 'No'}")
+    print(f"WALLETS env var: '{os.getenv('WALLETS', 'NOT_FOUND')}'")
+    print(f"data/wallets.txt exists: {os.path.exists('data/wallets.txt')}")
+    if os.path.exists('data/wallets.txt'):
+        with open('data/wallets.txt', 'r') as f:
+            content = f.read()
+            print(f"data/wallets.txt content: '{content}'")
+    print("Current working directory:", os.getcwd())
+    print("Files in current dir:", os.listdir('.'))
+    print("==================")
+
     sim_key = os.getenv("SIM_API_KEY", "")
     if not sim_key:
         raise RuntimeError("❌ SIM_API_KEY missing in environment/secrets")
