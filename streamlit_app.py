@@ -11,7 +11,115 @@ import streamlit as st
 # =========================
 # App config
 # =========================
-st.set_page_config(page_title="Dune SIM Wallet Tracker", layout="wide")
+st.set_page_config(
+    page_title="Portfolio Tracker - Your go-to for Ethereum and EVM", 
+    layout="wide",
+    initial_sidebar_state="collapsed"
+)
+
+# Custom CSS for DeBank-like styling
+st.markdown("""
+<style>
+    /* Hide Streamlit branding */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    header {visibility: hidden;}
+    
+    /* Main container styling */
+    .main {
+        padding-top: 2rem;
+        background-color: #f8fafc;
+    }
+    
+    /* Card styling */
+    .metric-card {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+        border: 1px solid #e2e8f0;
+    }
+    
+    /* Header styling */
+    .dashboard-header {
+        background: white;
+        padding: 2rem;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        margin-bottom: 2rem;
+        border: 1px solid #e2e8f0;
+    }
+    
+    /* Wallet section styling */
+    .wallet-section {
+        background: white;
+        padding: 1.5rem;
+        border-radius: 12px;
+        box-shadow: 0 1px 3px rgba(0,0,0,0.1);
+        margin-bottom: 1rem;
+        border: 1px solid #e2e8f0;
+    }
+    
+    /* Token list styling */
+    .token-row {
+        display: flex;
+        align-items: center;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid #f1f5f9;
+    }
+    
+    /* Button styling */
+    .stButton > button {
+        background-color: #3b82f6;
+        color: white;
+        border-radius: 8px;
+        border: none;
+        padding: 0.5rem 1rem;
+        font-weight: 500;
+    }
+    
+    /* Input styling */
+    .stTextInput > div > div > input {
+        border-radius: 8px;
+        border: 1px solid #d1d5db;
+    }
+    
+    /* Title styling */
+    .main-title {
+        font-size: 2rem;
+        font-weight: 600;
+        color: #1f2937;
+        margin-bottom: 0.5rem;
+    }
+    
+    .section-title {
+        font-size: 1.25rem;
+        font-weight: 600;
+        color: #374151;
+        margin-bottom: 1rem;
+    }
+    
+    /* Chain filter buttons */
+    .chain-filter {
+        display: inline-block;
+        background: #f1f5f9;
+        color: #374151;
+        padding: 0.5rem 1rem;
+        border-radius: 20px;
+        margin: 0.25rem;
+        font-size: 0.875rem;
+        border: 1px solid #e2e8f0;
+    }
+    
+    .chain-filter.active {
+        background: #3b82f6;
+        color: white;
+        border-color: #3b82f6;
+    }
+</style>
+""", unsafe_allow_html=True)
+
 BASE_SIM = "https://api.sim.dune.com/v1/evm"
 
 # SIM-supported common EVM chains
@@ -33,7 +141,7 @@ if "selected_wallet" not in st.session_state:
     st.session_state.selected_wallet = None
 
 # =========================
-# Persistence (SQLite) —— snapshots + notes
+# Database functions (same as before)
 # =========================
 DB_PATH = os.getenv("APP_DB_PATH", "data/app.sqlite")
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -99,15 +207,13 @@ def load_note(wallet: str) -> str:
         return row[0] if row else ""
 
 # =========================
-# Helpers
+# Helper functions (same as before)
 # =========================
 def get_sim_key() -> str:
     try:
-        return st.secrets["SIM_API_KEY"]  # Cloud Secrets or .streamlit/secrets.toml
+        return st.secrets["SIM_API_KEY"]
     except Exception:
         return os.getenv("SIM_API_KEY", "")
-
-SIM_API_KEY = get_sim_key()
 
 def normalize_wallets(raw: str) -> list[str]:
     lines = [x.strip() for x in (raw or "").splitlines()]
@@ -132,68 +238,69 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
 def df_not_empty(obj) -> bool:
     return isinstance(obj, pd.DataFrame) and not obj.empty
 
-# =========================
-# Sidebar
-# =========================
-with st.sidebar:
-    st.header("Settings")
-    selected_chains = st.multiselect(
-        "Chains to include",
-        list(CHAIN_OPTIONS.keys()),
-        default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base"],
-    )
-    st.caption(
-        "SIM API key source: " +
-        ("✅ loaded" if bool(SIM_API_KEY) else "❌ not found — set in Secrets or env")
-    )
+def fmt_money(x): 
+    return f"${x:,.2f}" if pd.notnull(x) else "$0.00"
+
+def fmt_large_number(x):
+    if x >= 1e6:
+        return f"${x/1e6:.2f}M"
+    elif x >= 1e3:
+        return f"${x/1e3:.2f}K"
+    else:
+        return f"${x:.2f}"
 
 # =========================
 # Main UI
 # =========================
-st.title("Dune SIM Wallet Tracker")
 
-# Preload last snapshot so page isn't empty after refresh
+# Header section
+st.markdown('<div class="dashboard-header">', unsafe_allow_html=True)
+st.markdown('<h1 class="main-title">Portfolio Tracker</h1>', unsafe_allow_html=True)
+st.markdown('<p style="color: #6b7280; font-size: 1rem;">Your go-to portfolio tracker for Ethereum and EVM</p>', unsafe_allow_html=True)
+
+# Settings row
+col1, col2, col3 = st.columns([2, 2, 1])
+
+with col1:
+    wallets_raw = st.text_area(
+        "Wallet Addresses",
+        value="",
+        height=100,
+        placeholder="Enter wallet addresses (one per line)"
+    )
+
+with col2:
+    selected_chains = st.multiselect(
+        "Select Chains",
+        list(CHAIN_OPTIONS.keys()),
+        default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base"],
+    )
+
+with col3:
+    st.markdown("<br>", unsafe_allow_html=True)
+    fetch_btn = st.button("Fetch Balances", type="primary", use_container_width=True)
+    
+    SIM_API_KEY = get_sim_key()
+    api_status = "Connected" if SIM_API_KEY else "Not Connected"
+    status_color = "#10b981" if SIM_API_KEY else "#ef4444"
+    st.markdown(f'<p style="color: {status_color}; font-size: 0.875rem;">API: {api_status}</p>', unsafe_allow_html=True)
+
+st.markdown('</div>', unsafe_allow_html=True)
+
+# Preload last snapshot
 if not df_not_empty(st.session_state.balances_df):
     cached = load_latest_snapshot()
     if not cached.empty:
         st.session_state.balances_df = cached.copy()
 
-wallets_raw = st.text_area(
-    "Wallets (one per line)",
-    value="0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045",
-    height=110,
-)
 wallets = normalize_wallets(wallets_raw)
-
-colA, colB = st.columns([1, 3])
-with colA:
-    run = st.button("Fetch Balances", type="primary")
-with colB:
-    st.caption("Click a wallet in the summary to drill into its assets. Notes are saved to SQLite.")
-
-# ---- Save wallets/chains for nightly backup (GitHub Actions/cron will read these)
-colX, colY = st.columns([1, 3])
-with colX:
-    if st.button("Use these wallets for nightly backup"):
-        os.makedirs("data", exist_ok=True)
-        with open("data/wallets.txt", "w") as f:
-            for w in wallets:
-                f.write(w + "\n")
-        with open("data/chains.json", "w") as f:
-            f.write(json.dumps({"chains": selected_chains}, indent=2))
-        st.success("Saved wallets & chains for nightly backup (in data/).")
-with colY:
-    st.caption("Nightly job reads data/wallets.txt and data/chains.json")
 
 # =========================
 # Fetch & build DF
 # =========================
-if run:
+if fetch_btn:
     if not SIM_API_KEY:
-        st.error(
-            "Missing SIM API key. Add it in App → Settings → Secrets (Cloud), "
-            "or .streamlit/secrets.toml (local), or env SIM_API_KEY."
-        )
+        st.error("Missing SIM API key. Please add it in App Settings → Secrets.")
         st.stop()
     if not wallets:
         st.warning("Please enter at least one wallet address.")
@@ -201,8 +308,17 @@ if run:
 
     chain_ids = ",".join(str(CHAIN_OPTIONS[c]) for c in selected_chains if c in CHAIN_OPTIONS)
 
+    # Show progress
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
     rows: list[dict] = []
-    for addr in wallets:
+    total_wallets = len(wallets)
+    
+    for i, addr in enumerate(wallets):
+        status_text.text(f"Fetching wallet {i+1}/{total_wallets}: {addr[:8]}...")
+        progress_bar.progress((i + 1) / total_wallets)
+        
         try:
             data = fetch_balances(addr, SIM_API_KEY, chain_ids)
         except Exception as e:
@@ -251,6 +367,9 @@ if run:
                 "value_usd": value_usd,
                 "token_address": token_addr,
             })
+    
+    progress_bar.empty()
+    status_text.empty()
 
     if not rows:
         st.info("No balances found.")
@@ -265,36 +384,47 @@ if run:
     st.session_state.selected_wallet = None
     ts_saved = save_snapshot_df(df)
     if ts_saved:
-        st.toast(f"Snapshot saved at {ts_saved}")
+        st.success(f"Portfolio updated at {ts_saved}")
 
 # =========================
-# Overview + Wallets table + Drilldown
+# Dashboard Display
 # =========================
-def fmt_money(x): return f"${x:,.2f}" if pd.notnull(x) else ""
-
 if df_not_empty(st.session_state.balances_df):
     df_all = st.session_state.balances_df.copy()
 
+    # Overview metrics
     total = float(df_all["value_usd"].fillna(0).sum()) if "value_usd" in df_all.columns else 0.0
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Total USD", fmt_money(total))
-    c2.metric("Wallets", df_all["wallet"].nunique() if "wallet" in df_all.columns else 0)
-    c3.metric("Assets", df_all["symbol"].nunique() if "symbol" in df_all.columns else 0)
+    num_wallets = df_all["wallet"].nunique() if "wallet" in df_all.columns else 0
+    num_tokens = df_all["symbol"].nunique() if "symbol" in df_all.columns else 0
+    
+    # Metrics cards
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Total Balance", fmt_large_number(total))
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col2:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Wallets", num_wallets)
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col3:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        st.metric("Tokens", num_tokens)
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    with col4:
+        st.markdown('<div class="metric-card">', unsafe_allow_html=True)
+        chains_count = df_all["chain"].nunique() if "chain" in df_all.columns else 0
+        st.metric("Chains", chains_count)
+        st.markdown('</div>', unsafe_allow_html=True)
 
-    st.divider()
-
-    if {"chain", "value_usd"}.issubset(df_all.columns):
-        by_chain = (
-            df_all.groupby("chain", as_index=False)["value_usd"]
-                  .sum()
-                  .sort_values("value_usd", ascending=False)
-        )
-        st.subheader("By Chain")
-        st.dataframe(by_chain, use_container_width=True, height=220)
-
-    st.divider()
-
-    st.subheader("Wallets")
+    # Wallets section
+    st.markdown('<div class="wallet-section">', unsafe_allow_html=True)
+    st.markdown('<h2 class="section-title">Wallets</h2>', unsafe_allow_html=True)
+    
     if {"wallet", "value_usd"}.issubset(df_all.columns):
         wallet_table = (
             df_all.groupby("wallet", as_index=False)["value_usd"]
@@ -302,70 +432,116 @@ if df_not_empty(st.session_state.balances_df):
                   .rename(columns={"value_usd": "total_usd"})
                   .sort_values("total_usd", ascending=False)
         )
-    else:
-        wallet_table = pd.DataFrame(columns=["wallet", "total_usd"])
+        
+        # Wallet list with enhanced styling
+        for i, row in wallet_table.iterrows():
+            wallet_addr = row['wallet']
+            total_value = row["total_usd"]
+            
+            # Wallet container
+            with st.container():
+                col1, col2, col3, col4 = st.columns([3, 2, 2, 1])
+                
+                with col1:
+                    st.markdown(f"**{wallet_addr[:8]}...{wallet_addr[-6:]}**")
+                    st.caption(wallet_addr)
+                
+                with col2:
+                    st.markdown(f"**{fmt_money(total_value)}**")
+                
+                with col3:
+                    current_note = load_note(wallet_addr)
+                    comment_key = f"comment_{wallet_addr}_{i}"
+                    
+                    new_comment = st.text_input(
+                        "Note",
+                        value=current_note,
+                        key=comment_key,
+                        placeholder="Add a note...",
+                        label_visibility="collapsed"
+                    )
+                    
+                    if new_comment != current_note:
+                        if st.button("💾", key=f"save_{wallet_addr}_{i}", help="Save note"):
+                            save_note(wallet_addr, new_comment)
+                            st.success("Saved!")
+                            st.rerun()
+                
+                with col4:
+                    if st.button("View Details", key=f"view_{i}"):
+                        st.session_state.selected_wallet = wallet_addr
+                        st.rerun()
+                
+                st.divider()
+    
+    st.markdown('</div>', unsafe_allow_html=True)
 
-    wt_show = wallet_table.copy()
-    if "total_usd" in wt_show.columns:
-        wt_show["total_usd"] = wt_show["total_usd"].map(fmt_money)
-    st.dataframe(wt_show, use_container_width=True, height=240)
-
-    st.caption("Click a wallet to view details:")
-    for i, row in wallet_table.iterrows():
-        cols = st.columns([6, 2, 1])
-        cols[0].write(f"{row['wallet']}")
-        cols[1].write(fmt_money(row["total_usd"]))
-        if cols[2].button("View", key=f"view_{i}"):
-            st.session_state.selected_wallet = row["wallet"]
-            st.rerun()
-
+    # Token Holdings section
     if st.session_state.selected_wallet:
         sel = st.session_state.selected_wallet
-        st.divider()
-        st.subheader(f"Details for {sel}")
-
         df_sel = df_all[df_all["wallet"] == sel].copy()
-
-        st.markdown("**Notes**")
-        note_text = st.text_area("Write notes for this wallet", value=load_note(sel), height=100, key=f"note_{sel}")
-        if st.button("Save Note", key=f"save_note_{sel}"):
-            save_note(sel, note_text)
-            st.success("Note saved.")
-
-        if {"chain", "value_usd"}.issubset(df_sel.columns):
-            chain_totals = (
-                df_sel.groupby("chain", as_index=False)["value_usd"]
-                      .sum()
-                      .sort_values("value_usd", ascending=False)
-            )
-        else:
-            chain_totals = pd.DataFrame(columns=["chain", "value_usd"])
-
-        col1, col2 = st.columns([2, 3])
-        with col1:
-            st.markdown("**By Chain (USD)**")
-            st.dataframe(chain_totals, use_container_width=True)
-
-        with col2:
-            st.markdown("**Holdings**")
-            show_cols = ["chain", "symbol", "amount", "price_usd", "value_usd", "token_address"]
-            show_cols = [c for c in show_cols if c in df_sel.columns]
-
-            df_view = df_sel.copy()
-            if "amount" in df_view.columns:
-                df_view["amount"] = df_view["amount"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
-            if "price_usd" in df_view.columns:
-                df_view["price_usd"] = df_view["price_usd"].map(lambda x: f"{x:,.6f}" if pd.notnull(x) else "")
-            if "value_usd" in df_view.columns:
-                df_view["value_usd"] = df_view["value_usd"].map(fmt_money)
-
-            st.dataframe(
-                df_view.sort_values("value_usd", ascending=False, na_position="last")[show_cols],
-                use_container_width=True, height=420
-            )
-
-        if st.button("Back to all wallets"):
+        
+        st.markdown('<div class="wallet-section">', unsafe_allow_html=True)
+        st.markdown(f'<h2 class="section-title">Token Holdings - {sel[:8]}...{sel[-6:]}</h2>', unsafe_allow_html=True)
+        
+        if not df_sel.empty:
+            # Token list
+            df_tokens = df_sel.groupby(['symbol', 'chain']).agg({
+                'amount': 'sum',
+                'value_usd': 'sum',
+                'price_usd': 'first'
+            }).reset_index().sort_values('value_usd', ascending=False)
+            
+            for _, token in df_tokens.iterrows():
+                col1, col2, col3, col4 = st.columns([2, 2, 2, 2])
+                
+                with col1:
+                    st.markdown(f"**{token['symbol']}**")
+                    st.caption(f"on {token['chain'].title()}")
+                
+                with col2:
+                    st.markdown(f"{token['amount']:,.6f}")
+                
+                with col3:
+                    price = token['price_usd']
+                    st.markdown(f"${price:,.4f}" if pd.notnull(price) else "N/A")
+                
+                with col4:
+                    st.markdown(f"**{fmt_money(token['value_usd'])}**")
+                
+                st.divider()
+        
+        if st.button("← Back to All Wallets"):
             st.session_state.selected_wallet = None
             st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+    
+    # Chain distribution
+    if {"chain", "value_usd"}.issubset(df_all.columns) and not st.session_state.selected_wallet:
+        by_chain = (
+            df_all.groupby("chain", as_index=False)["value_usd"]
+                  .sum()
+                  .sort_values("value_usd", ascending=False)
+        )
+        
+        st.markdown('<div class="wallet-section">', unsafe_allow_html=True)
+        st.markdown('<h2 class="section-title">Chain Distribution</h2>', unsafe_allow_html=True)
+        
+        for _, chain_data in by_chain.iterrows():
+            chain_name = chain_data['chain'].title()
+            chain_value = chain_data['value_usd']
+            percentage = (chain_value / total * 100) if total > 0 else 0
+            
+            col1, col2, col3 = st.columns([2, 2, 1])
+            with col1:
+                st.markdown(f"**{chain_name}**")
+            with col2:
+                st.markdown(f"{fmt_money(chain_value)}")
+            with col3:
+                st.markdown(f"{percentage:.1f}%")
+        
+        st.markdown('</div>', unsafe_allow_html=True)
+
 else:
-    st.info("Enter wallets and click Fetch Balances to begin.")
+    st.info("Enter wallet addresses and click 'Fetch Balances' to view your portfolio.")
