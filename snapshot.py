@@ -114,7 +114,7 @@ def build_df(wallets: List[str], chains: List[str], api_key: str) -> pd.DataFram
 # =========================
 def main():
 
-        print("=== DEBUG INFO ===")
+    print("=== DEBUG INFO ===")
     print(f"SIM_API_KEY present: {'Yes' if os.getenv('SIM_API_KEY') else 'No'}")
     print(f"WALLETS env var: '{os.getenv('WALLETS', 'NOT_FOUND')}'")
     print(f"data/wallets.txt exists: {os.path.exists('data/wallets.txt')}")
