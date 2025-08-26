@@ -206,6 +206,15 @@ def load_note(wallet: str) -> str:
         row = c.execute("SELECT note FROM notes WHERE wallet=?", (wallet,)).fetchone()
         return row[0] if row else ""
 
+def delete_wallet_data(wallet: str):
+    """Delete all data for a specific wallet from both snapshots and notes"""
+    with closing(_conn()) as c:
+        # Delete from snapshots table
+        c.execute("DELETE FROM snapshots WHERE wallet=?", (wallet,))
+        # Delete from notes table
+        c.execute("DELETE FROM notes WHERE wallet=?", (wallet,))
+        c.commit()
+
 # =========================
 # Helper functions (same as before)
 # =========================
@@ -468,9 +477,55 @@ if df_not_empty(st.session_state.balances_df):
                             st.rerun()
                 
                 with col4:
-                    if st.button("View Details", key=f"view_{i}"):
-                        st.session_state.selected_wallet = wallet_addr
-                        st.rerun()
+                    # Create two buttons side by side
+                    sub_col1, sub_col2 = st.columns(2)
+                    with sub_col1:
+                        if st.button("View", key=f"view_{i}", use_container_width=True):
+                            st.session_state.selected_wallet = wallet_addr
+                            st.rerun()
+                    
+                    with sub_col2:
+                        if st.button("🗑️", key=f"delete_{i}", help="Delete wallet", use_container_width=True):
+                            # Store the wallet to delete in session state for confirmation
+                            st.session_state[f"confirm_delete_{wallet_addr}"] = True
+                            st.rerun()
+                
+                # Show confirmation dialog if delete was clicked
+                if st.session_state.get(f"confirm_delete_{wallet_addr}", False):
+                    st.warning(f"⚠️ Are you sure you want to delete wallet {wallet_addr[:8]}...{wallet_addr[-6:]}?")
+                    col_yes, col_no, col_spacer = st.columns([1, 1, 3])
+                    
+                    with col_yes:
+                        if st.button("Yes, Delete", key=f"confirm_yes_{i}", type="secondary"):
+                            try:
+                                # Delete from database
+                                delete_wallet_data(wallet_addr)
+                                
+                                # Remove from current session data
+                                if df_not_empty(st.session_state.balances_df):
+                                    st.session_state.balances_df = st.session_state.balances_df[
+                                        st.session_state.balances_df["wallet"] != wallet_addr
+                                    ]
+                                
+                                # Clear any selection of this wallet
+                                if st.session_state.selected_wallet == wallet_addr:
+                                    st.session_state.selected_wallet = None
+                                
+                                # Clear confirmation state
+                                if f"confirm_delete_{wallet_addr}" in st.session_state:
+                                    del st.session_state[f"confirm_delete_{wallet_addr}"]
+                                
+                                st.success(f"Wallet {wallet_addr[:8]}...{wallet_addr[-6:]} deleted successfully!")
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Error deleting wallet: {e}")
+                    
+                    with col_no:
+                        if st.button("Cancel", key=f"confirm_no_{i}"):
+                            # Clear confirmation state
+                            if f"confirm_delete_{wallet_addr}" in st.session_state:
+                                del st.session_state[f"confirm_delete_{wallet_addr}"]
+                            st.rerun()
                 
                 st.divider()
     
