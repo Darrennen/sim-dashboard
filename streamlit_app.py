@@ -247,18 +247,57 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
     r.raise_for_status()
     return r.json() or {}
 
-def fetch_defi_positions(addr: str, api_key: str, chain_ids: str) -> dict:
-    """Fetch DeFi positions including lending, staking, LP tokens"""
+def fetch_balances_with_fallback(addr: str, api_key: str, chain_ids: str) -> dict:
+    """Fetch balances with chain-by-chain fallback if batch request fails"""
+    # First try all chains together
     try:
-        url = f"{BASE_SIM}/positions/{addr}"
-        if chain_ids:
-            url += f"?chain_ids={chain_ids}"
-        r = requests.get(url, headers={"X-Sim-Api-Key": api_key}, timeout=30)
-        r.raise_for_status()
-        return r.json() or {}
-    except Exception as e:
-        st.warning(f"DeFi positions fetch failed for {addr[:8]}...: {e}")
-        return {}
+        return fetch_balances(addr, api_key, chain_ids)
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 400:
+            st.warning(f"Batch request failed for {addr[:8]}..., trying individual chains...")
+            
+            # If batch fails, try each chain individually
+            combined_data = {"balances": []}
+            chain_id_list = [int(x.strip()) for x in chain_ids.split(",") if x.strip()]
+            
+            for chain_id in chain_id_list:
+                try:
+                    chain_data = fetch_balances(addr, api_key, str(chain_id))
+                    if chain_data.get("balances"):
+                        # Add chain info to each balance
+                        for balance in chain_data["balances"]:
+                            balance["chain"] = str(chain_id)
+                        combined_data["balances"].extend(chain_data["balances"])
+                except Exception as chain_error:
+                    chain_name = next((name for name, id in CHAIN_OPTIONS.items() if id == chain_id), str(chain_id))
+                    st.warning(f"Chain {chain_name} failed for {addr[:8]}...: {chain_error}")
+                    continue
+            
+            return combined_data
+        else:
+            raise e
+
+def fetch_defi_positions_with_fallback(addr: str, api_key: str, chain_ids: str) -> dict:
+    """Fetch DeFi positions with fallback handling"""
+    try:
+        return fetch_defi_positions(addr, api_key, chain_ids)
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 400:
+            # Try individual chains for DeFi positions too
+            combined_data = {"positions": []}
+            chain_id_list = [int(x.strip()) for x in chain_ids.split(",") if x.strip()]
+            
+            for chain_id in chain_id_list:
+                try:
+                    chain_data = fetch_defi_positions(addr, api_key, str(chain_id))
+                    if chain_data.get("positions"):
+                        combined_data["positions"].extend(chain_data["positions"])
+                except Exception:
+                    continue  # Silently continue for DeFi positions
+            
+            return combined_data
+        else:
+            return {}  # Return empty for DeFi positions errors
 
 def parse_defi_positions(positions_data: dict, addr: str) -> list[dict]:
     """Parse DeFi positions data into standardized format"""
@@ -345,7 +384,7 @@ with col2:
     selected_chains = st.multiselect(
         "Select Chains",
         list(CHAIN_OPTIONS.keys()),
-        default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base", "BNB Smart Chain", "Gnosis Chain", "Moonbeam", "Blast"],
+        default=["Ethereum", "Optimism", "Arbitrum", "Polygon", "Base", "BNB Smart Chain"],
     )
 
 with col3:
@@ -392,14 +431,14 @@ if fetch_btn:
         progress_bar.progress((i + 1) / total_wallets)
         
         try:
-            # Fetch regular token balances
-            data = fetch_balances(addr, SIM_API_KEY, chain_ids)
+            # Fetch regular token balances with fallback
+            data = fetch_balances_with_fallback(addr, SIM_API_KEY, chain_ids)
             
-            # Also try to fetch DeFi positions
-            defi_data = fetch_defi_positions(addr, SIM_API_KEY, chain_ids)
+            # Also try to fetch DeFi positions with fallback
+            defi_data = fetch_defi_positions_with_fallback(addr, SIM_API_KEY, chain_ids)
             
         except Exception as e:
-            st.warning(f"{addr}: {e}")
+            st.error(f"Failed to fetch data for {addr}: {e}")
             continue
 
         # Process regular balances
