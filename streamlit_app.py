@@ -247,6 +247,27 @@ def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
     r.raise_for_status()
     return r.json() or {}
 
+def fetch_balances(addr: str, api_key: str, chain_ids: str) -> dict:
+    url = f"{BASE_SIM}/balances/{addr}"
+    if chain_ids:
+        url += f"?chain_ids={chain_ids}"
+    r = requests.get(url, headers={"X-Sim-Api-Key": api_key}, timeout=30)
+    r.raise_for_status()
+    return r.json() or {}
+
+def fetch_defi_positions(addr: str, api_key: str, chain_ids: str) -> dict:
+    """Fetch DeFi positions including lending, staking, LP tokens"""
+    try:
+        url = f"{BASE_SIM}/positions/{addr}"
+        if chain_ids:
+            url += f"?chain_ids={chain_ids}"
+        r = requests.get(url, headers={"X-Sim-Api-Key": api_key}, timeout=30)
+        r.raise_for_status()
+        return r.json() or {}
+    except Exception as e:
+        st.warning(f"DeFi positions fetch failed for {addr[:8]}...: {e}")
+        return {}
+
 def fetch_balances_with_fallback(addr: str, api_key: str, chain_ids: str) -> dict:
     """Fetch balances with chain-by-chain fallback if batch request fails"""
     # First try all chains together
